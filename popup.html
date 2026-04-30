@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>3D Model Extractor</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <h1>3D Model Extractor</h1>
+  </header>
+
+  <main>
+    <section id="error-message" class="error-message" role="alert" hidden>
+      Unable to communicate with extension. Please try reopening the popup.
+    </section>
+
+    <section id="empty-state" aria-live="polite" hidden>
+      <p>No 3D models detected on this page.</p>
+    </section>
+
+    <section id="model-list" aria-label="Detected 3D models" role="list">
+    </section>
+
+    <div id="action-buttons" hidden>
+      <button id="download-all-btn" type="button">
+        Download All
+      </button>
+      <button id="clear-btn" type="button">
+        Clear List
+      </button>
+    </div>
+  </main>
+
+  <script src="browser-polyfill.js"></script>
+  <script src="popup.js" type="module"></script>
+</body>
+</html>

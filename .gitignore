@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# IDE / Editor
+.kiro/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Environment
+.env
+.env.*
+
+# Build / Debug
+dist/
+*.log
+
+# Test coverage
+coverage/
