@@ -36,7 +36,11 @@
   "browser_specific_settings": {
     "gecko": {
       "id": "tripwire@siriusss8",
-      "strict_min_version": "109.0"
+      "strict_min_version": "115.0",
+      "data_collection_permissions": {
+        "is_exempt": true,
+        "reason": "This extension does not collect or transmit any user data."
+      }
     }
   }
 }
