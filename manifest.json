@@ -32,5 +32,11 @@
       "js": ["content-script.js"],
       "run_at": "document_idle"
     }
-  ]
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "tripwire@siriusss8",
+      "strict_min_version": "109.0"
+    }
+  }
 }
