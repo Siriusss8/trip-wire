@@ -34,6 +34,6 @@ export default [
     },
   },
   {
-    ignores: ['node_modules/', 'browser-polyfill.js', 'meshopt_decoder.js'],
+    ignores: ['node_modules/', 'dist/', 'browser-polyfill.js', 'meshopt_decoder.js'],
   },
 ];

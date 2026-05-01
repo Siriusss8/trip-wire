@@ -31,20 +31,8 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           ZIP_NAME="tripwire-${VERSION}.zip"
-          zip -r "$ZIP_NAME" \
-            manifest.json \
-            background.js \
-            browser-api.js \
-            browser-polyfill.js \
-            content-script.js \
-            format-utils.js \
-            glb-decompress.js \
-            meshopt_decoder.js \
-            popup.html \
-            popup.css \
-            popup.js \
-            url-utils.js \
-            icons/
+          node scripts/build.js
+          cd dist && zip -r "../$ZIP_NAME" . && cd ..
           echo "ZIP_NAME=$ZIP_NAME" >> "$GITHUB_ENV"
 
       - name: Create GitHub Release

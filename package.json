@@ -4,6 +4,7 @@
   "description": "Cross-browser extension to detect and download GLB 3D model files from webpages",
   "type": "module",
   "scripts": {
+    "build": "node scripts/build.js",
     "test": "vitest --run",
     "test:watch": "vitest",
     "lint": "eslint ."
