@@ -2,6 +2,16 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
+// Mock fetchAndDecompress before importing popup.js
+const mockFetchAndDecompress = vi.fn();
+vi.mock('../glb-decompress.js', () => ({
+  fetchAndDecompress: (...args) => mockFetchAndDecompress(...args),
+}));
+
+// Mock URL.createObjectURL/revokeObjectURL
+globalThis.URL.createObjectURL = vi.fn(() => 'blob:fake-url');
+globalThis.URL.revokeObjectURL = vi.fn();
+
 // Mock the browser namespace before importing popup.js
 const mockBrowser = {
   runtime: {
@@ -9,6 +19,9 @@ const mockBrowser = {
   },
   tabs: {
     query: vi.fn(() => Promise.resolve([{ id: 1 }])),
+  },
+  downloads: {
+    download: vi.fn(() => Promise.resolve(1)),
   },
 };
 
@@ -194,26 +207,32 @@ describe('downloadModel', () => {
   beforeEach(() => {
     setupDOM();
     vi.clearAllMocks();
+    mockFetchAndDecompress.mockResolvedValue({
+      blob: new Blob(['fake-glb'], { type: 'model/gltf-binary' }),
+      decompressed: true,
+    });
+    mockBrowser.downloads.download.mockResolvedValue(1);
+    mockBrowser.runtime.sendMessage.mockResolvedValue({ success: true });
   });
 
-  it('sends correct download message to service worker', async () => {
-    mockBrowser.runtime.sendMessage.mockResolvedValue({ success: true });
-
+  it('calls fetchAndDecompress then sends download message to mark as downloaded', async () => {
     const model = makeModel({ url: 'https://cdn.example.com/robot.glb', filename: 'robot.glb' });
     await downloadModel(model);
 
+    expect(mockFetchAndDecompress).toHaveBeenCalledWith('https://cdn.example.com/robot.glb');
+    expect(mockBrowser.downloads.download).toHaveBeenCalledWith({
+      url: 'blob:fake-url',
+      filename: 'robot.glb',
+    });
     expect(mockBrowser.runtime.sendMessage).toHaveBeenCalledWith({
-      type: 'download',
+      type: 'markDownloaded',
       url: 'https://cdn.example.com/robot.glb',
       filename: 'robot.glb',
     });
   });
 
-  it('shows inline error when download response indicates failure', async () => {
-    mockBrowser.runtime.sendMessage.mockResolvedValue({
-      success: false,
-      error: 'URL expired',
-    });
+  it('shows inline error when fetchAndDecompress rejects', async () => {
+    mockFetchAndDecompress.mockRejectedValueOnce(new Error('URL expired'));
 
     const model = makeModel();
     // Render the model first so the DOM item exists
@@ -223,24 +242,11 @@ describe('downloadModel', () => {
 
     const errorEl = document.querySelector('.model-error');
     expect(errorEl).not.toBeNull();
-    expect(errorEl.textContent).toBe('URL expired');
-  });
-
-  it('shows default error message when response has no error string', async () => {
-    mockBrowser.runtime.sendMessage.mockResolvedValue({ success: false });
-
-    const model = makeModel();
-    renderModels([model]);
-
-    await downloadModel(model);
-
-    const errorEl = document.querySelector('.model-error');
-    expect(errorEl).not.toBeNull();
     expect(errorEl.textContent).toContain('Download failed');
   });
 
-  it('shows inline error when sendMessage throws (communication error)', async () => {
-    mockBrowser.runtime.sendMessage.mockRejectedValue(new Error('Service worker not ready'));
+  it('shows inline error when downloads.download rejects', async () => {
+    mockBrowser.downloads.download.mockRejectedValueOnce(new Error('Disk full'));
 
     const model = makeModel();
     renderModels([model]);
@@ -262,14 +268,25 @@ describe('downloadAll', () => {
   beforeEach(() => {
     setupDOM();
     vi.clearAllMocks();
+    mockFetchAndDecompress.mockResolvedValue({
+      blob: new Blob(['fake-glb'], { type: 'model/gltf-binary' }),
+      decompressed: true,
+    });
+    mockBrowser.downloads.download.mockResolvedValue(1);
+    mockBrowser.runtime.sendMessage.mockResolvedValue({ success: true });
   });
 
-  it('sends downloadAll message to service worker', async () => {
-    mockBrowser.runtime.sendMessage.mockResolvedValue({ results: [] });
+  it('calls fetchAndDecompress for each model', async () => {
+    const modelA = makeModel({ url: 'https://example.com/a.glb', filename: 'a.glb', timestamp: 2000 });
+    const modelB = makeModel({ url: 'https://example.com/b.glb', filename: 'b.glb', timestamp: 1000 });
 
-    await downloadAll([makeModel()]);
+    renderModels([modelA, modelB]);
 
-    expect(mockBrowser.runtime.sendMessage).toHaveBeenCalledWith({ type: 'downloadAll' });
+    await downloadAll([modelA, modelB]);
+
+    expect(mockFetchAndDecompress).toHaveBeenCalledTimes(2);
+    expect(mockFetchAndDecompress).toHaveBeenCalledWith('https://example.com/a.glb');
+    expect(mockFetchAndDecompress).toHaveBeenCalledWith('https://example.com/b.glb');
   });
 
   it('shows per-file errors for failed downloads', async () => {
@@ -279,27 +296,19 @@ describe('downloadAll', () => {
     // Render models so DOM items exist
     renderModels([modelA, modelB]);
 
-    mockBrowser.runtime.sendMessage.mockResolvedValue({
-      results: [
-        { url: 'https://example.com/a.glb', filename: 'a.glb', success: false, error: 'Link expired' },
-        { url: 'https://example.com/b.glb', filename: 'b.glb', success: true },
-      ],
-    });
+    // First fetch fails, second succeeds
+    mockFetchAndDecompress
+      .mockRejectedValueOnce(new Error('Link expired'))
+      .mockResolvedValueOnce({
+        blob: new Blob(['data'], { type: 'model/gltf-binary' }),
+        decompressed: true,
+      });
 
     await downloadAll([modelA, modelB]);
 
     const errors = document.querySelectorAll('.model-error');
     expect(errors.length).toBe(1);
-    expect(errors[0].textContent).toBe('Link expired');
-  });
-
-  it('shows communication error when sendMessage throws', async () => {
-    mockBrowser.runtime.sendMessage.mockRejectedValue(new Error('Extension disconnected'));
-
-    await downloadAll([makeModel()]);
-
-    const errorMessage = document.getElementById('error-message');
-    expect(errorMessage.hidden).toBe(false);
+    expect(errors[0].textContent).toContain('Download failed');
   });
 });
 
@@ -312,22 +321,17 @@ describe('communication error handling', () => {
   beforeEach(() => {
     setupDOM();
     vi.clearAllMocks();
+    mockFetchAndDecompress.mockRejectedValue(new Error('Network error'));
   });
 
-  it('shows error message section and hides other content on communication error', async () => {
-    mockBrowser.runtime.sendMessage.mockRejectedValue(new Error('Extension disconnected'));
+  it('shows error on individual model download failure and hides after re-render', async () => {
+    const model = makeModel();
+    renderModels([model]);
 
-    // Simulate downloadAll triggering communication error
-    await downloadAll([makeModel()]);
+    await downloadModel(model);
 
-    const errorMessage = document.getElementById('error-message');
-    const emptyState = document.getElementById('empty-state');
-    const modelList = document.getElementById('model-list');
-    const actionButtons = document.getElementById('action-buttons');
-
-    expect(errorMessage.hidden).toBe(false);
-    expect(emptyState.hidden).toBe(true);
-    expect(modelList.innerHTML).toBe('');
-    expect(actionButtons.hidden).toBe(true);
+    const errorEl = document.querySelector('.model-error');
+    expect(errorEl).not.toBeNull();
+    expect(errorEl.textContent).toContain('Download failed');
   });
 });

@@ -14,6 +14,15 @@ export default [
         setTimeout: 'readonly',
         clearTimeout: 'readonly',
         URL: 'readonly',
+        Blob: 'readonly',
+        TextDecoder: 'readonly',
+        TextEncoder: 'readonly',
+        WebAssembly: 'readonly',
+        Worker: 'readonly',
+        fetch: 'readonly',
+        btoa: 'readonly',
+        self: 'readonly',
+        globalThis: 'readonly',
         decodeURIComponent: 'readonly',
         // WebExtension globals
         browser: 'readonly',
@@ -25,6 +34,6 @@ export default [
     },
   },
   {
-    ignores: ['node_modules/', 'browser-polyfill.js'],
+    ignores: ['node_modules/', 'browser-polyfill.js', 'meshopt_decoder.js'],
   },
 ];

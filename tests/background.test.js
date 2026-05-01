@@ -1,19 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import fc from 'fast-check';
 
-// Mock fetchAndDecompress before importing background.js
-const mockFetchAndDecompress = vi.fn(() => Promise.resolve({
-  blob: new Blob(['fake-glb'], { type: 'model/gltf-binary' }),
-  decompressed: true,
-}));
-vi.mock('../glb-decompress.js', () => ({
-  fetchAndDecompress: (...args) => mockFetchAndDecompress(...args),
-}));
-
-// Mock URL.createObjectURL/revokeObjectURL
-globalThis.URL.createObjectURL = vi.fn(() => 'blob:fake-url');
-globalThis.URL.revokeObjectURL = vi.fn();
-
 // Mock the browser namespace before importing background.js
 const mockBrowser = {
   action: {
@@ -298,10 +285,6 @@ describe('onMessage handler', () => {
     // Default: tabs.query returns tab with id 1
     mockBrowser.tabs.query.mockResolvedValue([{ id: 1 }]);
     mockBrowser.downloads.download.mockResolvedValue(1);
-    mockFetchAndDecompress.mockResolvedValue({
-      blob: new Blob(['fake-glb'], { type: 'model/gltf-binary' }),
-      decompressed: true,
-    });
   });
 
   describe('getModels', () => {
@@ -356,23 +339,21 @@ describe('onMessage handler', () => {
   });
 
   describe('download', () => {
-    it('fetches, decompresses, and downloads via blob URL', async () => {
+    it('downloads directly from the original URL', async () => {
       const result = await onMessage(
         { type: 'download', url: 'https://example.com/model.glb', filename: 'model.glb' },
         {}
       );
 
-      expect(mockFetchAndDecompress).toHaveBeenCalledWith('https://example.com/model.glb');
       expect(mockBrowser.downloads.download).toHaveBeenCalledWith({
-        url: 'blob:fake-url',
+        url: 'https://example.com/model.glb',
         filename: 'model.glb',
       });
-      expect(result.success).toBe(true);
-      expect(result.decompressed).toBe(true);
+      expect(result).toEqual({ success: true, decompressed: false });
     });
 
-    it('returns error when fetch/decompress fails', async () => {
-      mockFetchAndDecompress.mockRejectedValueOnce(new Error('Network error'));
+    it('returns error when download fails', async () => {
+      mockBrowser.downloads.download.mockRejectedValueOnce(new Error('Network error'));
 
       const result = await onMessage(
         { type: 'download', url: 'https://example.com/model.glb', filename: 'model.glb' },
@@ -380,23 +361,6 @@ describe('onMessage handler', () => {
       );
 
       expect(result).toEqual({ success: false, error: 'Network error' });
-    });
-
-    it('returns warning when decompression fails but file is saved', async () => {
-      mockFetchAndDecompress.mockResolvedValueOnce({
-        blob: new Blob(['data'], { type: 'model/gltf-binary' }),
-        decompressed: false,
-        warning: 'Decompression failed: unsupported mode',
-      });
-
-      const result = await onMessage(
-        { type: 'download', url: 'https://example.com/model.glb', filename: 'model.glb' },
-        {}
-      );
-
-      expect(result.success).toBe(true);
-      expect(result.decompressed).toBe(false);
-      expect(result.warning).toBe('Decompression failed: unsupported mode');
     });
   });
 
@@ -419,7 +383,6 @@ describe('onMessage handler', () => {
 
       const result = await onMessage({ type: 'downloadAll' }, {});
 
-      expect(mockFetchAndDecompress).toHaveBeenCalledTimes(2);
       expect(mockBrowser.downloads.download).toHaveBeenCalledTimes(2);
       expect(result.results).toHaveLength(2);
       expect(result.results.every((r) => r.success === true)).toBe(true);
@@ -441,13 +404,10 @@ describe('onMessage handler', () => {
       });
       tabModels.set(1, models);
 
-      // First fetch fails, second succeeds
-      mockFetchAndDecompress
+      // First download fails, second succeeds
+      mockBrowser.downloads.download
         .mockRejectedValueOnce(new Error('Network error'))
-        .mockResolvedValueOnce({
-          blob: new Blob(['data'], { type: 'model/gltf-binary' }),
-          decompressed: true,
-        });
+        .mockResolvedValueOnce(1);
 
       const result = await onMessage({ type: 'downloadAll' }, {});
 
@@ -482,9 +442,8 @@ describe('onMessage handler', () => {
 
       await onMessage({ type: 'downloadAll' }, {});
 
-      expect(mockFetchAndDecompress).toHaveBeenCalledWith('https://example.com/a.glb');
       expect(mockBrowser.downloads.download).toHaveBeenCalledWith({
-        url: 'blob:fake-url',
+        url: 'https://example.com/a.glb',
         filename: 'a.glb',
       });
     });

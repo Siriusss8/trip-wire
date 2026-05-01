@@ -14,7 +14,6 @@
 
 import browser from './browser-api.js';
 import { isGlbUrl, deriveFilename } from './url-utils.js';
-import { fetchAndDecompress } from './glb-decompress.js';
 
 /**
  * @typedef {Object} ModelEntry
@@ -84,15 +83,6 @@ function updateBadge(tabId) {
 // ---------------------------------------------------------------------------
 // Header helpers
 // ---------------------------------------------------------------------------
-
-function getHeaderValue(headers, headerName) {
-  if (!Array.isArray(headers)) return '';
-  const lower = headerName.toLowerCase();
-  for (const h of headers) {
-    if (h.name.toLowerCase() === lower) return h.value || '';
-  }
-  return '';
-}
 
 function getContentLength(headers) {
   if (!Array.isArray(headers)) return 0;
@@ -201,20 +191,13 @@ async function onMessage(message, _sender) {
 
   if (message.type === 'download') {
     try {
-      const result = await fetchAndDecompress(message.url);
-      const blobUrl = URL.createObjectURL(result.blob);
+      // Direct download from the original URL (no decompression in service worker)
       await browser.downloads.download({
-        url: blobUrl,
+        url: message.url,
         filename: message.filename,
       });
-      // Clean up blob URL after a delay
-      setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
       markModelDownloaded(message.filename);
-      return {
-        success: true,
-        decompressed: result.decompressed,
-        warning: result.warning || null,
-      };
+      return { success: true, decompressed: false };
     } catch (error) {
       return { success: false, error: error.message || String(error) };
     }
@@ -231,20 +214,16 @@ async function onMessage(message, _sender) {
     const results = [];
     for (const entry of modelsMap.values()) {
       try {
-        const result = await fetchAndDecompress(entry.url);
-        const blobUrl = URL.createObjectURL(result.blob);
         await browser.downloads.download({
-          url: blobUrl,
+          url: entry.url,
           filename: entry.filename,
         });
-        setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
         entry.downloaded = true;
         results.push({
           url: entry.url,
           filename: entry.filename,
           success: true,
-          decompressed: result.decompressed,
-          warning: result.warning || null,
+          decompressed: false,
         });
       } catch (error) {
         results.push({
@@ -257,6 +236,11 @@ async function onMessage(message, _sender) {
     }
     persistState();
     return { results };
+  }
+
+  if (message.type === 'markDownloaded') {
+    markModelDownloaded(message.filename);
+    return { success: true };
   }
 
   if (message.type === 'clearModels') {

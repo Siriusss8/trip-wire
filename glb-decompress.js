@@ -4,6 +4,12 @@
  * Fetches a GLB file, checks for EXT_meshopt_compression, decompresses
  * all compressed buffer views, and returns a clean GLB without the extension.
  * Falls back to the original binary if decompression fails.
+ *
+ * Handles gltfpack's multi-buffer layout where:
+ * - Buffer 0: contains uncompressed data (images, etc.) in the GLB BIN chunk
+ * - Buffer 1+: contains compressed mesh data referenced by the extension
+ *   (also stored in the same BIN chunk, but at different offsets tracked by
+ *    the buffer's byteLength)
  */
 
 import { MeshoptDecoder } from './meshopt_decoder.js';
@@ -27,7 +33,6 @@ const BIN_CHUNK_TYPE = 0x004E4942; // 'BIN\0'
  * @returns {Promise<DecompressResult>}
  */
 export async function fetchAndDecompress(url) {
-  // Fetch the raw GLB binary
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`Fetch failed: ${response.status} ${response.statusText}`);
@@ -35,12 +40,9 @@ export async function fetchAndDecompress(url) {
 
   const arrayBuffer = await response.arrayBuffer();
 
-  // Try to decompress
   try {
-    const result = await decompressGlb(arrayBuffer);
-    return result;
+    return await decompressGlb(arrayBuffer);
   } catch (err) {
-    // Decompression failed — return original with warning
     return {
       blob: new Blob([arrayBuffer], { type: 'model/gltf-binary' }),
       decompressed: false,
@@ -67,7 +69,7 @@ async function decompressGlb(buffer) {
   }
 
   // Parse chunks
-  let offset = 12; // After header (magic + version + length)
+  let offset = 12;
   let jsonChunk = null;
   let binChunk = null;
 
@@ -82,9 +84,8 @@ async function decompressGlb(buffer) {
       binChunk = chunkData;
     }
 
-    // Chunks are padded to 4-byte alignment
     offset += 8 + chunkLength;
-    if (offset % 4 !== 0) offset += 4 - (offset % 4);
+    // GLB chunks are already 4-byte aligned by spec (chunkLength includes padding)
   }
 
   if (!jsonChunk) {
@@ -97,8 +98,8 @@ async function decompressGlb(buffer) {
   // Check if the file uses EXT_meshopt_compression
   const extUsed = gltf.extensionsUsed || [];
   const extRequired = gltf.extensionsRequired || [];
-  if (!extUsed.includes('EXT_meshopt_compression') && !extRequired.includes('EXT_meshopt_compression')) {
-    // No meshopt compression — return as-is
+  if (!extUsed.includes('EXT_meshopt_compression') &&
+      !extRequired.includes('EXT_meshopt_compression')) {
     return {
       blob: new Blob([buffer], { type: 'model/gltf-binary' }),
       decompressed: false,
@@ -108,12 +109,32 @@ async function decompressGlb(buffer) {
   // Initialize the meshopt decoder
   await MeshoptDecoder.ready;
 
-  // Decompress all buffer views that have the extension
-  const bufferViews = gltf.bufferViews || [];
   const binData = binChunk ? new Uint8Array(binChunk) : new Uint8Array(0);
+  const bufferViews = gltf.bufferViews || [];
+  const buffers = gltf.buffers || [];
 
-  // Build new buffer data
-  const decodedBufferViews = [];
+  // gltfpack stores all buffer data sequentially in the single BIN chunk.
+  // Each buffer's data starts at the cumulative offset of previous buffers.
+  // Build a map of buffer index → byte offset within the BIN chunk.
+  const bufferOffsets = [];
+  let cumulativeOffset = 0;
+  for (let i = 0; i < buffers.length; i++) {
+    bufferOffsets.push(cumulativeOffset);
+    // For GLB, buffer 0's byteLength tells us where buffer 1 starts, etc.
+    cumulativeOffset += buffers[i].byteLength || 0;
+  }
+
+  /**
+   * Get the raw bytes for a given buffer index + offset + length from the BIN chunk.
+   */
+  function getBufferData(bufferIndex, byteOffset, byteLength) {
+    const base = bufferOffsets[bufferIndex] || 0;
+    const start = base + byteOffset;
+    return binData.slice(start, start + byteLength);
+  }
+
+  // Process all buffer views: decompress compressed ones, copy uncompressed ones
+  const decodedChunks = [];
   let newBufferSize = 0;
 
   for (let i = 0; i < bufferViews.length; i++) {
@@ -121,117 +142,98 @@ async function decompressGlb(buffer) {
     const ext = bv.extensions?.EXT_meshopt_compression;
 
     if (ext) {
-      // Decompress this buffer view
-      const { byteOffset = 0, byteLength, byteStride = 0, count, mode, filter = 'NONE' } = ext;
-      const source = binData.slice(byteOffset, byteOffset + byteLength);
+      // This bufferView is meshopt-compressed
+      const srcBuffer = ext.buffer !== undefined ? ext.buffer : (bv.buffer || 0);
+      const srcOffset = ext.byteOffset || 0;
+      const srcLength = ext.byteLength;
+      const count = ext.count;
+      const mode = ext.mode;
+      const filter = ext.filter || 'NONE';
+      const stride = ext.byteStride;
 
-      const stride = byteStride || (ext.byteLength ? Math.ceil(ext.byteLength / count) : 0);
-      if (stride === 0) {
-        throw new Error(`Cannot determine stride for bufferView ${i}`);
+      if (!stride || !count || !mode) {
+        throw new Error(`Missing required meshopt fields for bufferView ${i}`);
       }
+
+      // Read compressed source data from the correct buffer
+      const source = getBufferData(srcBuffer, srcOffset, srcLength);
 
       const outputSize = count * stride;
       const decoded = new Uint8Array(outputSize);
 
-      // Map mode string to decoder function
-      const modeMap = {
-        ATTRIBUTES: MeshoptDecoder.decodeVertexBuffer,
-        TRIANGLES: MeshoptDecoder.decodeIndexBuffer,
-        INDICES: MeshoptDecoder.decodeIndexSequence,
-      };
-
-      const decodeFn = modeMap[mode];
-      if (!decodeFn) {
+      // Decode with filter applied (filter is passed to decodeVertexBuffer)
+      if (mode === 'ATTRIBUTES') {
+        MeshoptDecoder.decodeVertexBuffer(decoded, count, stride, source, filter);
+      } else if (mode === 'TRIANGLES') {
+        MeshoptDecoder.decodeIndexBuffer(decoded, count, stride, source);
+      } else if (mode === 'INDICES') {
+        MeshoptDecoder.decodeIndexSequence(decoded, count, stride, source);
+      } else {
         throw new Error(`Unknown meshopt mode: ${mode}`);
       }
 
-      decodeFn(decoded, count, stride, source, mode === 'TRIANGLES' ? 'triangles' : mode === 'INDICES' ? 'indices' : undefined);
-
-      // Apply filter if specified
-      if (filter !== 'NONE') {
-        const filterMap = {
-          OCTAHEDRAL: MeshoptDecoder.decodeFilterOct,
-          QUATERNION: MeshoptDecoder.decodeFilterQuat,
-          EXPONENTIAL: MeshoptDecoder.decodeFilterExp,
-        };
-        const filterFn = filterMap[filter];
-        if (filterFn) {
-          filterFn(decoded, count, stride);
-        }
-      }
-
-      // Store decoded data with alignment
+      // Align to 4 bytes
       const alignedOffset = (newBufferSize + 3) & ~3;
-      decodedBufferViews.push({
-        index: i,
-        data: decoded,
-        offset: alignedOffset,
-        byteLength: outputSize,
-        byteStride: bv.byteStride || (stride > 4 ? stride : undefined),
-      });
+      decodedChunks.push({ index: i, data: decoded, offset: alignedOffset });
       newBufferSize = alignedOffset + outputSize;
-    } else {
-      // Uncompressed buffer view — copy as-is
-      const byteOffset = bv.byteOffset || 0;
-      const byteLength = bv.byteLength;
-      const data = binData.slice(byteOffset, byteOffset + byteLength);
 
-      const alignedOffset = (newBufferSize + 3) & ~3;
-      decodedBufferViews.push({
-        index: i,
-        data,
-        offset: alignedOffset,
-        byteLength,
-        byteStride: bv.byteStride,
-      });
-      newBufferSize = alignedOffset + byteLength;
-    }
-  }
-
-  // Build new binary buffer
-  const newBinBuffer = new Uint8Array(newBufferSize);
-  for (const dbv of decodedBufferViews) {
-    newBinBuffer.set(dbv.data, dbv.offset);
-  }
-
-  // Update the glTF JSON
-  for (const dbv of decodedBufferViews) {
-    const bv = bufferViews[dbv.index];
-    bv.byteOffset = dbv.offset;
-    bv.byteLength = dbv.byteLength;
-    if (dbv.byteStride) {
-      bv.byteStride = dbv.byteStride;
-    } else {
-      delete bv.byteStride;
-    }
-    // Remove the meshopt extension from this buffer view
-    if (bv.extensions) {
+      // Update the bufferView in-place
+      bv.buffer = 0;
+      bv.byteOffset = alignedOffset;
+      bv.byteLength = outputSize;
+      // byteStride: keep the original bv.byteStride if it was set, otherwise
+      // set it from the extension stride (but only for vertex buffers with stride > element size)
+      if (!bv.byteStride && mode === 'ATTRIBUTES' && stride > 0) {
+        bv.byteStride = stride;
+      }
+      // Remove the extension
       delete bv.extensions.EXT_meshopt_compression;
       if (Object.keys(bv.extensions).length === 0) {
         delete bv.extensions;
       }
+
+    } else {
+      // Uncompressed bufferView — copy from its source buffer
+      const srcBuffer = bv.buffer || 0;
+      const srcOffset = bv.byteOffset || 0;
+      const srcLength = bv.byteLength;
+      const data = getBufferData(srcBuffer, srcOffset, srcLength);
+
+      const alignedOffset = (newBufferSize + 3) & ~3;
+      decodedChunks.push({ index: i, data, offset: alignedOffset });
+      newBufferSize = alignedOffset + srcLength;
+
+      // Update bufferView to point to new single buffer
+      bv.buffer = 0;
+      bv.byteOffset = alignedOffset;
+      // byteLength stays the same
     }
   }
 
-  // Update buffer size
-  if (gltf.buffers && gltf.buffers.length > 0) {
-    gltf.buffers[0].byteLength = newBufferSize;
+  // Build the new single binary buffer
+  const newBinBuffer = new Uint8Array(newBufferSize);
+  for (const chunk of decodedChunks) {
+    newBinBuffer.set(chunk.data, chunk.offset);
   }
 
-  // Remove the extension from extensionsUsed/extensionsRequired
+  // Update glTF JSON: single buffer, remove extra buffers
+  gltf.buffers = [{ byteLength: newBufferSize }];
+
+  // Remove EXT_meshopt_compression from extensions lists
   gltf.extensionsUsed = extUsed.filter(e => e !== 'EXT_meshopt_compression');
   gltf.extensionsRequired = extRequired.filter(e => e !== 'EXT_meshopt_compression');
   if (gltf.extensionsUsed.length === 0) delete gltf.extensionsUsed;
   if (gltf.extensionsRequired && gltf.extensionsRequired.length === 0) delete gltf.extensionsRequired;
 
+  // Also clean up any buffer-level extensions (gltfpack sometimes puts them there)
+  // This is already handled by replacing gltf.buffers above.
+
   // Rebuild the GLB
   const newJsonText = JSON.stringify(gltf);
   const newJsonBuffer = new TextEncoder().encode(newJsonText);
-  // Pad JSON to 4-byte alignment with spaces
   const jsonPadding = (4 - (newJsonBuffer.byteLength % 4)) % 4;
   const paddedJsonLength = newJsonBuffer.byteLength + jsonPadding;
 
-  // Pad binary to 4-byte alignment with zeros
   const binPadding = (4 - (newBinBuffer.byteLength % 4)) % 4;
   const paddedBinLength = newBinBuffer.byteLength + binPadding;
 
@@ -250,7 +252,6 @@ async function decompressGlb(buffer) {
   outView.setUint32(pos, paddedJsonLength, true);
   outView.setUint32(pos + 4, JSON_CHUNK_TYPE, true);
   outBytes.set(newJsonBuffer, pos + 8);
-  // Pad with spaces (0x20)
   for (let i = 0; i < jsonPadding; i++) {
     outBytes[pos + 8 + newJsonBuffer.byteLength + i] = 0x20;
   }
@@ -260,7 +261,6 @@ async function decompressGlb(buffer) {
   outView.setUint32(pos, paddedBinLength, true);
   outView.setUint32(pos + 4, BIN_CHUNK_TYPE, true);
   outBytes.set(newBinBuffer, pos + 8);
-  // Pad with zeros (already 0)
 
   return {
     blob: new Blob([output], { type: 'model/gltf-binary' }),

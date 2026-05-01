@@ -6,6 +6,7 @@
 
 import browser from './browser-api.js';
 import { formatFileSize, formatTimestamp } from './format-utils.js';
+import { fetchAndDecompress } from './glb-decompress.js';
 
 /**
  * @typedef {Object} ModelEntry
@@ -99,29 +100,41 @@ async function downloadModel(model, btn) {
     btn.disabled = true;
   }
   try {
-    const response = await browser.runtime.sendMessage({
-      type: 'download',
+    // Fetch and decompress in the popup context (has full DOM access)
+    const result = await fetchAndDecompress(model.url);
+
+    // Determine filename — strip _meshopt if decompressed
+    let filename = model.filename;
+    if (result.decompressed) {
+      filename = filename.replace(/_meshopt/gi, '');
+    }
+
+    // Create blob URL and trigger download via the downloads API
+    const blobUrl = URL.createObjectURL(result.blob);
+    await browser.downloads.download({ url: blobUrl, filename });
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+
+    // Mark as downloaded in the service worker state
+    await browser.runtime.sendMessage({
+      type: 'markDownloaded',
       url: model.url,
       filename: model.filename,
     });
 
-    if (response && !response.success) {
-      showModelError(model.filename, response.error || 'Download failed — the link may have expired.');
-      if (btn) {
-        btn.textContent = 'Download';
-        btn.disabled = false;
-      }
-    } else if (btn) {
+    if (btn) {
       btn.classList.add('downloaded');
       btn.textContent = 'Downloaded';
       btn.disabled = false;
-      // Show warning if decompression failed but file was saved
-      if (response && response.warning) {
-        showModelWarning(model.filename, response.warning);
-      }
+    }
+    if (result.warning) {
+      showModelWarning(model.filename, result.warning);
     }
   } catch (_err) {
     showModelError(model.filename, 'Download failed — the link may have expired.');
+    if (btn) {
+      btn.textContent = 'Download';
+      btn.disabled = false;
+    }
   }
 }
 
@@ -129,32 +142,46 @@ async function downloadModel(model, btn) {
  * Request download of all models.
  * @param {ModelEntry[]} _models
  */
-async function downloadAll(_models) {
-  try {
-    const response = await browser.runtime.sendMessage({ type: 'downloadAll' });
+async function downloadAll(models) {
+  for (const model of models) {
+    const item = document.querySelector(`.model-item[data-filename="${model.filename}"]`) ||
+      [...document.querySelectorAll('.model-item')].find(el => el.dataset.filename === model.filename);
+    const btn = item?.querySelector('.model-download-btn');
+    if (btn) {
+      btn.textContent = 'Processing...';
+      btn.disabled = true;
+    }
+    try {
+      const result = await fetchAndDecompress(model.url);
+      let filename = model.filename;
+      if (result.decompressed) {
+        filename = filename.replace(/_meshopt/gi, '');
+      }
+      const blobUrl = URL.createObjectURL(result.blob);
+      await browser.downloads.download({ url: blobUrl, filename });
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
 
-    if (response && response.results) {
-      for (const result of response.results) {
-        if (!result.success) {
-          showModelError(result.filename, result.error || 'Download failed — the link may have expired.');
-        } else {
-          // Mark the button as downloaded
-          const items = document.querySelectorAll('.model-item');
-          for (const item of items) {
-            if (item.dataset.filename === result.filename) {
-              const btn = item.querySelector('.model-download-btn');
-              if (btn) {
-                btn.classList.add('downloaded');
-                btn.textContent = 'Downloaded';
-              }
-              break;
-            }
-          }
-        }
+      await browser.runtime.sendMessage({
+        type: 'markDownloaded',
+        url: model.url,
+        filename: model.filename,
+      });
+
+      if (btn) {
+        btn.classList.add('downloaded');
+        btn.textContent = 'Downloaded';
+        btn.disabled = false;
+      }
+      if (result.warning) {
+        showModelWarning(model.filename, result.warning);
+      }
+    } catch (_err) {
+      showModelError(model.filename, 'Download failed — the link may have expired.');
+      if (btn) {
+        btn.textContent = 'Download';
+        btn.disabled = false;
       }
     }
-  } catch (_err) {
-    showCommunicationError();
   }
 }
 
