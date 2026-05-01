@@ -148,6 +148,14 @@ main {
   line-height: 1.3;
 }
 
+/* Inline warning for decompression issues */
+.model-warning {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #d97706;
+  line-height: 1.3;
+}
+
 /* Action buttons container */
 #action-buttons {
   display: flex;

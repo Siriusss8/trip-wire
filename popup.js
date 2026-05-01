@@ -94,6 +94,10 @@ function renderModels(models) {
  * @param {HTMLButtonElement} [btn]
  */
 async function downloadModel(model, btn) {
+  if (btn) {
+    btn.textContent = 'Processing...';
+    btn.disabled = true;
+  }
   try {
     const response = await browser.runtime.sendMessage({
       type: 'download',
@@ -103,9 +107,18 @@ async function downloadModel(model, btn) {
 
     if (response && !response.success) {
       showModelError(model.filename, response.error || 'Download failed — the link may have expired.');
+      if (btn) {
+        btn.textContent = 'Download';
+        btn.disabled = false;
+      }
     } else if (btn) {
       btn.classList.add('downloaded');
       btn.textContent = 'Downloaded';
+      btn.disabled = false;
+      // Show warning if decompression failed but file was saved
+      if (response && response.warning) {
+        showModelWarning(model.filename, response.warning);
+      }
     }
   } catch (_err) {
     showModelError(model.filename, 'Download failed — the link may have expired.');
@@ -173,6 +186,27 @@ function showModelError(filename, message) {
       errorEl.classList.add('model-error');
       errorEl.textContent = message;
       item.querySelector('.model-info').appendChild(errorEl);
+      break;
+    }
+  }
+}
+
+/**
+ * Display an inline warning message for a specific model item.
+ * @param {string} filename
+ * @param {string} message
+ */
+function showModelWarning(filename, message) {
+  const items = document.querySelectorAll('.model-item');
+  for (const item of items) {
+    if (item.dataset.filename === filename) {
+      const existingWarn = item.querySelector('.model-warning');
+      if (existingWarn) existingWarn.remove();
+
+      const warnEl = document.createElement('div');
+      warnEl.classList.add('model-warning');
+      warnEl.textContent = message;
+      item.querySelector('.model-info').appendChild(warnEl);
       break;
     }
   }

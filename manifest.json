@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "3D Model Extractor",
+  "name": "TripWire",
   "version": "1.0.0",
   "description": "Detect and download GLB 3D model files from webpages",
   "permissions": ["webRequest", "downloads", "activeTab", "storage"],

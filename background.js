@@ -14,6 +14,7 @@
 
 import browser from './browser-api.js';
 import { isGlbUrl, deriveFilename } from './url-utils.js';
+import { fetchAndDecompress } from './glb-decompress.js';
 
 /**
  * @typedef {Object} ModelEntry
@@ -200,13 +201,20 @@ async function onMessage(message, _sender) {
 
   if (message.type === 'download') {
     try {
+      const result = await fetchAndDecompress(message.url);
+      const blobUrl = URL.createObjectURL(result.blob);
       await browser.downloads.download({
-        url: message.url,
+        url: blobUrl,
         filename: message.filename,
       });
-      // Mark as downloaded in state
+      // Clean up blob URL after a delay
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
       markModelDownloaded(message.filename);
-      return { success: true };
+      return {
+        success: true,
+        decompressed: result.decompressed,
+        warning: result.warning || null,
+      };
     } catch (error) {
       return { success: false, error: error.message || String(error) };
     }
@@ -223,12 +231,21 @@ async function onMessage(message, _sender) {
     const results = [];
     for (const entry of modelsMap.values()) {
       try {
+        const result = await fetchAndDecompress(entry.url);
+        const blobUrl = URL.createObjectURL(result.blob);
         await browser.downloads.download({
-          url: entry.url,
+          url: blobUrl,
           filename: entry.filename,
         });
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
         entry.downloaded = true;
-        results.push({ url: entry.url, filename: entry.filename, success: true });
+        results.push({
+          url: entry.url,
+          filename: entry.filename,
+          success: true,
+          decompressed: result.decompressed,
+          warning: result.warning || null,
+        });
       } catch (error) {
         results.push({
           url: entry.url,
