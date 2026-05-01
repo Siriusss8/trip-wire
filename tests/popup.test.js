@@ -76,8 +76,8 @@ describe('renderModels', () => {
   });
 
   describe('empty state', () => {
-    it('shows empty state and hides download-all button when models is empty', () => {
-      renderModels([]);
+    it('shows empty state and hides download-all button when models is empty', async () => {
+      await renderModels([]);
 
       const emptyState = document.getElementById('empty-state');
       const actionButtons = document.getElementById('action-buttons');
@@ -88,15 +88,15 @@ describe('renderModels', () => {
       expect(modelList.children.length).toBe(0);
     });
 
-    it('shows empty state when models is null', () => {
-      renderModels(null);
+    it('shows empty state when models is null', async () => {
+      await renderModels(null);
 
       const emptyState = document.getElementById('empty-state');
       expect(emptyState.hidden).toBe(false);
     });
 
-    it('shows empty state when models is undefined', () => {
-      renderModels(undefined);
+    it('shows empty state when models is undefined', async () => {
+      await renderModels(undefined);
 
       const emptyState = document.getElementById('empty-state');
       expect(emptyState.hidden).toBe(false);
@@ -104,12 +104,12 @@ describe('renderModels', () => {
   });
 
   describe('model list rendering', () => {
-    it('creates correct DOM elements with filename, size, and timestamp', () => {
+    it('creates correct DOM elements with filename, size, and timestamp', async () => {
       const models = [
         makeModel({ filename: 'robot.glb', size: 2048, timestamp: 1700000100 }),
       ];
 
-      renderModels(models);
+      await renderModels(models);
 
       const modelList = document.getElementById('model-list');
       const items = modelList.querySelectorAll('.model-item');
@@ -127,8 +127,8 @@ describe('renderModels', () => {
       expect(downloadBtn.textContent).toBe('Download');
     });
 
-    it('hides empty state and shows download-all button when models exist', () => {
-      renderModels([makeModel()]);
+    it('hides empty state and shows download-all button when models exist', async () => {
+      await renderModels([makeModel()]);
 
       const emptyState = document.getElementById('empty-state');
       const actionButtons = document.getElementById('action-buttons');
@@ -137,22 +137,22 @@ describe('renderModels', () => {
       expect(actionButtons.hidden).toBe(false);
     });
 
-    it('renders multiple models', () => {
+    it('renders multiple models', async () => {
       const models = [
         makeModel({ url: 'https://example.com/a.glb', filename: 'a.glb', timestamp: 1000 }),
         makeModel({ url: 'https://example.com/b.glb', filename: 'b.glb', timestamp: 2000 }),
         makeModel({ url: 'https://example.com/c.glb', filename: 'c.glb', timestamp: 3000 }),
       ];
 
-      renderModels(models);
+      await renderModels(models);
 
       const items = document.querySelectorAll('.model-item');
       expect(items.length).toBe(3);
     });
 
-    it('clears previous content before rendering', () => {
-      renderModels([makeModel({ url: 'https://example.com/first.glb', filename: 'first.glb' })]);
-      renderModels([makeModel({ url: 'https://example.com/second.glb', filename: 'second.glb' })]);
+    it('clears previous content before rendering', async () => {
+      await renderModels([makeModel({ url: 'https://example.com/first.glb', filename: 'first.glb' })]);
+      await renderModels([makeModel({ url: 'https://example.com/second.glb', filename: 'second.glb' })]);
 
       const items = document.querySelectorAll('.model-item');
       expect(items.length).toBe(1);
@@ -161,14 +161,14 @@ describe('renderModels', () => {
   });
 
   describe('sorting', () => {
-    it('sorts models by timestamp descending (most recent first)', () => {
+    it('sorts models by timestamp descending (most recent first)', async () => {
       const models = [
         makeModel({ url: 'https://example.com/old.glb', filename: 'old.glb', timestamp: 1000 }),
         makeModel({ url: 'https://example.com/new.glb', filename: 'new.glb', timestamp: 3000 }),
         makeModel({ url: 'https://example.com/mid.glb', filename: 'mid.glb', timestamp: 2000 }),
       ];
 
-      renderModels(models);
+      await renderModels(models);
 
       const filenames = [...document.querySelectorAll('.model-filename')].map(
         (el) => el.textContent
@@ -178,19 +178,19 @@ describe('renderModels', () => {
   });
 
   describe('unknown size display', () => {
-    it('shows "Unknown size" for models with size 0', () => {
+    it('shows "Unknown size" for models with size 0', async () => {
       const models = [makeModel({ size: 0 })];
 
-      renderModels(models);
+      await renderModels(models);
 
       const size = document.querySelector('.model-size');
       expect(size.textContent).toBe('Unknown size');
     });
 
-    it('shows formatted size for models with non-zero size', () => {
+    it('shows formatted size for models with non-zero size', async () => {
       const models = [makeModel({ size: 1048576 })];
 
-      renderModels(models);
+      await renderModels(models);
 
       const size = document.querySelector('.model-size');
       expect(size.textContent).toBe('1 MB');
@@ -236,7 +236,7 @@ describe('downloadModel', () => {
 
     const model = makeModel();
     // Render the model first so the DOM item exists
-    renderModels([model]);
+    await renderModels([model]);
 
     await downloadModel(model);
 
@@ -249,7 +249,7 @@ describe('downloadModel', () => {
     mockBrowser.downloads.download.mockRejectedValueOnce(new Error('Disk full'));
 
     const model = makeModel();
-    renderModels([model]);
+    await renderModels([model]);
 
     await downloadModel(model);
 
@@ -280,7 +280,7 @@ describe('downloadAll', () => {
     const modelA = makeModel({ url: 'https://example.com/a.glb', filename: 'a.glb', timestamp: 2000 });
     const modelB = makeModel({ url: 'https://example.com/b.glb', filename: 'b.glb', timestamp: 1000 });
 
-    renderModels([modelA, modelB]);
+    await renderModels([modelA, modelB]);
 
     await downloadAll([modelA, modelB]);
 
@@ -294,7 +294,7 @@ describe('downloadAll', () => {
     const modelB = makeModel({ url: 'https://example.com/b.glb', filename: 'b.glb', timestamp: 1000 });
 
     // Render models so DOM items exist
-    renderModels([modelA, modelB]);
+    await renderModels([modelA, modelB]);
 
     // First fetch fails, second succeeds
     mockFetchAndDecompress
@@ -326,7 +326,7 @@ describe('communication error handling', () => {
 
   it('shows error on individual model download failure and hides after re-render', async () => {
     const model = makeModel();
-    renderModels([model]);
+    await renderModels([model]);
 
     await downloadModel(model);
 

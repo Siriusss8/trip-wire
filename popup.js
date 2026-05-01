@@ -8,6 +8,108 @@ import browser from './browser-api.js';
 import { formatFileSize, formatTimestamp } from './format-utils.js';
 import { fetchAndDecompress } from './glb-decompress.js';
 
+/** Cached page model name (queried once per popup open) */
+let _cachedPageName = undefined;
+
+/**
+ * Derive a readable filename from a browser tab title.
+ * Strips common site-name suffixes and trailing UUIDs, then sanitises.
+ * @param {string} title - The raw tab title
+ * @returns {string|null} filename base (no extension) or null
+ */
+function filenameFromTabTitle(title) {
+  if (!title || title.length <= 2) return null;
+
+  let cleaned = title
+    // Strip trailing " - SiteName" / " | SiteName"
+    .replace(/\s*[-|–—]\s*[^-|–—]+$/, '')
+    .trim();
+
+  // Strip trailing UUID-like segments (e.g. " ac78b194-c53d-458c-8443-6c0cb08a4b03")
+  cleaned = cleaned.replace(/\s+[0-9a-f]{8}(?:-[0-9a-f]{4,}){1,4}$/i, '').trim();
+
+  if (cleaned.length <= 2 || cleaned.length >= 120) return null;
+
+  // Skip generic headings
+  if (/^(?:generate|create|welcome|home|gallery|explore)\b/i.test(cleaned)) return null;
+
+  // Convert to safe filename (mirrors nameToFilename in content-script.js)
+  const filename = cleaned
+    .toLowerCase()
+    .replace(/[<>:"/\\|?*]/g, '')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x1f]/g, '')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '')
+    .substring(0, 80);
+
+  return filename || null;
+}
+
+/**
+ * Query the content script for a human-readable model name.
+ * Falls back to deriving a name from the tab title if the content script
+ * is unreachable (common on SPAs where the script may not respond).
+ * Best-effort, silent on failure. Caches the result.
+ * @returns {Promise<string|null>} filename base (no extension) or null
+ */
+async function getReadableFilename() {
+  if (_cachedPageName !== undefined) return _cachedPageName;
+  try {
+    const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+    if (!tabs || tabs.length === 0) { _cachedPageName = null; return null; }
+
+    // Try the content script first — it can inspect the DOM (dialogs, og:title, etc.)
+    try {
+      const response = await browser.tabs.sendMessage(tabs[0].id, { type: 'getModelName' });
+      if (response?.filename) {
+        _cachedPageName = response.filename;
+        return _cachedPageName;
+      }
+    } catch (_contentScriptErr) {
+      // Content script not available — fall through to tab-title fallback
+    }
+
+    // Fallback: derive a name from the tab title (always available, no content script needed)
+    _cachedPageName = filenameFromTabTitle(tabs[0].title);
+    return _cachedPageName;
+  } catch (_err) {
+    _cachedPageName = null;
+    return null;
+  }
+}
+
+/**
+ * Build the final download filename for a model.
+ * Uses the readable page name if available, otherwise the URL-derived name.
+ * Strips _meshopt if decompressed, appends _meshopt if not.
+ * @param {string} originalFilename - URL-derived filename
+ * @param {boolean} decompressed - whether decompression succeeded
+ * @returns {Promise<string>}
+ */
+async function buildDownloadFilename(originalFilename, decompressed) {
+  const readableName = await getReadableFilename();
+
+  let base;
+  if (readableName) {
+    base = readableName;
+  } else {
+    // Use original filename without extension
+    base = originalFilename.replace(/\.glb$/i, '');
+  }
+
+  // Strip _meshopt from the base if decompressed
+  if (decompressed) {
+    base = base.replace(/_meshopt/gi, '');
+  }
+
+  // Clean up trailing/leading underscores after stripping
+  base = base.replace(/^_+|_+$/g, '');
+
+  return base + '.glb';
+}
+
 /**
  * @typedef {Object} ModelEntry
  * @property {string} url - The full GLB file URL (including query params)
@@ -19,9 +121,10 @@ import { fetchAndDecompress } from './glb-decompress.js';
 
 /**
  * Render model entries into the popup DOM.
+ * Queries the page for a readable name and uses it for display if available.
  * @param {ModelEntry[]} models
  */
-function renderModels(models) {
+async function renderModels(models) {
   const modelList = document.getElementById('model-list');
   const emptyState = document.getElementById('empty-state');
   const actionButtons = document.getElementById('action-buttons');
@@ -37,6 +140,9 @@ function renderModels(models) {
   emptyState.hidden = true;
   actionButtons.hidden = false;
 
+  // Pre-fetch the readable name so the list shows it immediately
+  const readableName = await getReadableFilename();
+
   const sorted = [...models].sort((a, b) => b.timestamp - a.timestamp);
 
   for (const model of sorted) {
@@ -48,10 +154,17 @@ function renderModels(models) {
     const info = document.createElement('div');
     info.classList.add('model-info');
 
+    // Show the readable name (with .glb) if available, otherwise the URL-derived name
+    let displayName = model.filename;
+    if (readableName) {
+      let base = readableName.replace(/_meshopt/gi, '').replace(/^_+|_+$/g, '');
+      displayName = base + '.glb';
+    }
+
     const filename = document.createElement('div');
     filename.classList.add('model-filename');
-    filename.textContent = model.filename;
-    filename.title = model.filename;
+    filename.textContent = displayName;
+    filename.title = displayName;
 
     const details = document.createElement('div');
     details.classList.add('model-details');
@@ -103,11 +216,8 @@ async function downloadModel(model, btn) {
     // Fetch and decompress in the popup context (has full DOM access)
     const result = await fetchAndDecompress(model.url);
 
-    // Determine filename — strip _meshopt if decompressed
-    let filename = model.filename;
-    if (result.decompressed) {
-      filename = filename.replace(/_meshopt/gi, '');
-    }
+    // Build a readable filename
+    const filename = await buildDownloadFilename(model.filename, result.decompressed);
 
     // Create blob URL and trigger download via the downloads API
     const blobUrl = URL.createObjectURL(result.blob);
@@ -153,10 +263,7 @@ async function downloadAll(models) {
     }
     try {
       const result = await fetchAndDecompress(model.url);
-      let filename = model.filename;
-      if (result.decompressed) {
-        filename = filename.replace(/_meshopt/gi, '');
-      }
+      const filename = await buildDownloadFilename(model.filename, result.decompressed);
       const blobUrl = URL.createObjectURL(result.blob);
       await browser.downloads.download({ url: blobUrl, filename });
       setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);

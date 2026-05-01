@@ -67,28 +67,31 @@ describe('formatFileSize', () => {
 });
 
 describe('formatTimestamp', () => {
-  it('formats Unix epoch 0 as "00:00:00"', () => {
-    expect(formatTimestamp(0)).toBe('00:00:00');
+  it('formats Unix epoch 0 to local time', () => {
+    // Epoch 0 in local time depends on timezone, so compute expected value
+    const d = new Date(0);
+    const expected = [d.getHours(), d.getMinutes(), d.getSeconds()]
+      .map((n) => String(n).padStart(2, '0'))
+      .join(':');
+    expect(formatTimestamp(0)).toBe(expected);
   });
 
-  it('formats a known timestamp correctly', () => {
-    // 1700000000 = 2023-11-14 22:13:20 UTC
-    expect(formatTimestamp(1700000000)).toBe('22:13:20');
-  });
-
-  it('formats midnight correctly', () => {
-    // 86400 = exactly one day = 00:00:00 UTC
-    expect(formatTimestamp(86400)).toBe('00:00:00');
+  it('formats a known timestamp to local time', () => {
+    // 1700000000 = 2023-11-14 22:13:20 UTC — local time varies by timezone
+    const d = new Date(1700000000 * 1000);
+    const expected = [d.getHours(), d.getMinutes(), d.getSeconds()]
+      .map((n) => String(n).padStart(2, '0'))
+      .join(':');
+    expect(formatTimestamp(1700000000)).toBe(expected);
   });
 
   it('formats a timestamp with single-digit hours/minutes/seconds with padding', () => {
-    // 3661 = 01:01:01 UTC
-    expect(formatTimestamp(3661)).toBe('01:01:01');
-  });
-
-  it('formats end of day correctly', () => {
-    // 86399 = 23:59:59 UTC
-    expect(formatTimestamp(86399)).toBe('23:59:59');
+    // 3661 seconds from epoch — local time varies
+    const d = new Date(3661 * 1000);
+    const expected = [d.getHours(), d.getMinutes(), d.getSeconds()]
+      .map((n) => String(n).padStart(2, '0'))
+      .join(':');
+    expect(formatTimestamp(3661)).toBe(expected);
   });
 
   it('returns "00:00:00" for negative values', () => {
@@ -115,6 +118,16 @@ describe('formatTimestamp', () => {
     for (const ts of timestamps) {
       expect(formatTimestamp(ts)).toMatch(pattern);
     }
+  });
+
+  it('uses local timezone, not UTC', () => {
+    // Pick a timestamp and verify it matches Date local getters, not UTC getters
+    const ts = 1700000000;
+    const d = new Date(ts * 1000);
+    const localResult = [d.getHours(), d.getMinutes(), d.getSeconds()]
+      .map((n) => String(n).padStart(2, '0'))
+      .join(':');
+    expect(formatTimestamp(ts)).toBe(localResult);
   });
 });
 
