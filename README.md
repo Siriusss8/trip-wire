@@ -35,6 +35,8 @@ Then load the `dist/` folder as an unpacked extension (same steps as above).
 
 The extension tries to name files after the model (pulled from the page title or DOM), but it's only best-effort. If meshopt compression is detected, it decompresses automatically and strips the `_meshopt` suffix.
 
+Draco-compressed GLBs (`KHR_draco_mesh_compression`) are downloaded as-is. Most tools — Blender, Unity, three.js — handle Draco natively, so decompression on our end isn't necessary.
+
 ## How it works
 
 - A `webRequest.onCompleted` listener in the background service worker watches for HTTP responses with `.glb` in the path
