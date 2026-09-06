@@ -82,20 +82,24 @@ async function getReadableFilename() {
 
 /**
  * Build the final download filename for a model.
- * Uses the readable page name if available, otherwise the URL-derived name.
- * Strips _meshopt if decompressed, appends _meshopt if not.
+ * Uses the readable page name only when there is exactly one model on the page
+ * (to avoid multiple models colliding on the same filename). Falls back to the
+ * URL-derived filename otherwise.
+ * Strips _meshopt from the base if decompression succeeded.
  * @param {string} originalFilename - URL-derived filename
  * @param {boolean} decompressed - whether decompression succeeded
+ * @param {number} totalModels - total number of models detected on the page
  * @returns {Promise<string>}
  */
-async function buildDownloadFilename(originalFilename, decompressed) {
-  const readableName = await getReadableFilename();
+async function buildDownloadFilename(originalFilename, decompressed, totalModels = 1) {
+  // Only substitute the readable page name when there is a single model;
+  // with multiple models each must keep its own distinct filename.
+  const readableName = totalModels === 1 ? await getReadableFilename() : null;
 
   let base;
   if (readableName) {
     base = readableName;
   } else {
-    // Use original filename without extension
     base = originalFilename.replace(/\.glb$/i, '');
   }
 
@@ -121,7 +125,8 @@ async function buildDownloadFilename(originalFilename, decompressed) {
 
 /**
  * Render model entries into the popup DOM.
- * Queries the page for a readable name and uses it for display if available.
+ * Each model displays its own URL-derived filename. The readable page name is
+ * only substituted when there is exactly one model (to avoid filename collisions).
  * @param {ModelEntry[]} models
  */
 async function renderModels(models) {
@@ -140,31 +145,34 @@ async function renderModels(models) {
   emptyState.hidden = true;
   actionButtons.hidden = false;
 
-  // Pre-fetch the readable name so the list shows it immediately
-  const readableName = await getReadableFilename();
-
   const sorted = [...models].sort((a, b) => b.timestamp - a.timestamp);
+  const totalModels = sorted.length;
+
+  // For a single model, pre-fetch the readable name so the list shows it immediately.
+  // For multiple models each keeps its own filename to avoid collisions.
+  const readableName = totalModels === 1 ? await getReadableFilename() : null;
 
   for (const model of sorted) {
     const item = document.createElement('div');
     item.classList.add('model-item');
     item.setAttribute('role', 'listitem');
+    // Use the URL-derived filename as the stable key for DOM lookup
     item.dataset.filename = model.filename;
 
     const info = document.createElement('div');
     info.classList.add('model-info');
 
-    // Show the readable name (with .glb) if available, otherwise the URL-derived name
+    // Single model: substitute readable name; multiple models: use each model's own name
     let displayName = model.filename;
     if (readableName) {
-      let base = readableName.replace(/_meshopt/gi, '').replace(/^_+|_+$/g, '');
+      const base = readableName.replace(/_meshopt/gi, '').replace(/^_+|_+$/g, '');
       displayName = base + '.glb';
     }
 
-    const filename = document.createElement('div');
-    filename.classList.add('model-filename');
-    filename.textContent = displayName;
-    filename.title = displayName;
+    const filenameEl = document.createElement('div');
+    filenameEl.classList.add('model-filename');
+    filenameEl.textContent = displayName;
+    filenameEl.title = displayName;
 
     const details = document.createElement('div');
     details.classList.add('model-details');
@@ -179,25 +187,24 @@ async function renderModels(models) {
 
     details.appendChild(size);
     details.appendChild(timestamp);
-    info.appendChild(filename);
+    info.appendChild(filenameEl);
     info.appendChild(details);
 
     const downloadBtn = document.createElement('button');
     downloadBtn.classList.add('model-download-btn');
-    // Apply downloaded state from persisted data
     if (model.downloaded) {
       downloadBtn.classList.add('downloaded');
     }
     downloadBtn.type = 'button';
     downloadBtn.textContent = model.downloaded ? 'Downloaded' : 'Download';
-    downloadBtn.addEventListener('click', () => downloadModel(model, downloadBtn));
+    downloadBtn.addEventListener('click', () => downloadModel(model, downloadBtn, totalModels));
 
     item.appendChild(info);
     item.appendChild(downloadBtn);
     modelList.appendChild(item);
   }
 
-  // Wire up action buttons
+  // Wire up action buttons — pass the full sorted list so downloadAll has the count
   document.getElementById('download-all-btn').onclick = () => downloadAll(sorted);
   document.getElementById('clear-btn').onclick = () => clearModels();
 }
@@ -206,25 +213,21 @@ async function renderModels(models) {
  * Request download of a single model.
  * @param {ModelEntry} model
  * @param {HTMLButtonElement} [btn]
+ * @param {number} [totalModels] - total models on page, used for filename logic
  */
-async function downloadModel(model, btn) {
+async function downloadModel(model, btn, totalModels = 1) {
   if (btn) {
     btn.textContent = 'Processing...';
     btn.disabled = true;
   }
   try {
-    // Fetch and decompress in the popup context (has full DOM access)
     const result = await fetchAndDecompress(model.url);
+    const filename = await buildDownloadFilename(model.filename, result.decompressed, totalModels);
 
-    // Build a readable filename
-    const filename = await buildDownloadFilename(model.filename, result.decompressed);
-
-    // Create blob URL and trigger download via the downloads API
     const blobUrl = URL.createObjectURL(result.blob);
     await browser.downloads.download({ url: blobUrl, filename });
     setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
 
-    // Mark as downloaded in the service worker state
     await browser.runtime.sendMessage({
       type: 'markDownloaded',
       url: model.url,
@@ -250,12 +253,13 @@ async function downloadModel(model, btn) {
 
 /**
  * Request download of all models.
- * @param {ModelEntry[]} _models
+ * @param {ModelEntry[]} models
  */
 async function downloadAll(models) {
+  const totalModels = models.length;
   for (const model of models) {
-    const item = document.querySelector(`.model-item[data-filename="${model.filename}"]`) ||
-      [...document.querySelectorAll('.model-item')].find(el => el.dataset.filename === model.filename);
+    const item = [...document.querySelectorAll('.model-item')]
+      .find(el => el.dataset.filename === model.filename);
     const btn = item?.querySelector('.model-download-btn');
     if (btn) {
       btn.textContent = 'Processing...';
@@ -263,7 +267,7 @@ async function downloadAll(models) {
     }
     try {
       const result = await fetchAndDecompress(model.url);
-      const filename = await buildDownloadFilename(model.filename, result.decompressed);
+      const filename = await buildDownloadFilename(model.filename, result.decompressed, totalModels);
       const blobUrl = URL.createObjectURL(result.blob);
       await browser.downloads.download({ url: blobUrl, filename });
       setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
